@@ -312,6 +312,7 @@ def _re_flatten(p):
                   len(m.group(1)) % 2 else m.group(1) + '(?:', p)
 
 
+# 路由组件，负责路由注册和匹配
 class Router(object):
     """ A Router is an ordered collection of route->target pairs. It is used to
         efficiently match WSGI requests against a number of routes and return
@@ -546,6 +547,7 @@ class Router(object):
         raise HTTPError(404, "Not found: " + repr(path))
 
 
+# 路由规则
 class Route(object):
     """ This class wraps a route callback along with route specific metadata and
         configuration and applies Plugins on demand. It is also responsible for
@@ -660,6 +662,7 @@ class Route(object):
 ###############################################################################
 
 
+# Bottle 应用
 class Bottle(object):
     """ Each Bottle object represents a single, distinct web application and
         consists of routes, callbacks, plugins, resources and configuration.
@@ -716,6 +719,8 @@ class Bottle(object):
     __hook_names = 'before_request', 'after_request', 'app_reset', 'config'
     __hook_reversed = {'after_request'}
 
+    # 发布-订阅模式实现 Hook
+    # 注意保留 hook 和普通 hook 的行为稍有不同
     @cached_property
     def _hooks(self):
         return dict((name, []) for name in self.__hook_names)
@@ -744,19 +749,25 @@ class Bottle(object):
 
     def trigger_hook(self, __name, *args, **kwargs):
         """ Trigger a hook and return a list of results. """
+        # 这里为啥要写 __name 而不是 name，没搞懂
         return [hook(*args, **kwargs) for hook in self._hooks[__name][:]]
 
     def hook(self, name):
         """ Return a decorator that attaches a callback to a hook. See
             :meth:`add_hook` for details."""
 
+        # 用于注册的具名装饰器
         def decorator(func):
             self.add_hook(name, func)
             return func
 
         return decorator
 
+    # App 挂载，有两种不同方式
     def _mount_wsgi(self, prefix, app, **options):
+        # 将 Bottle App 挂载到其它的 wsgi App 上，并为其赋予前缀
+        # 有点像 Flask 的 Blueprint？
+        # 见 :meth:`Bottle.mount`
         segments = [p for p in prefix.split('/') if p]
         if not segments:
             raise ValueError('WSGI applications cannot be mounted to "/".')
@@ -809,6 +820,7 @@ class Bottle(object):
         self._mounts.append(app)
         app.config['_mount.prefix'] = prefix
         app.config['_mount.app'] = self
+        # 设置前缀后，重新添加路由
         for route in app.routes:
             route.rule = prefix + route.rule.lstrip('/')
             self.add_route(route)
@@ -853,6 +865,7 @@ class Bottle(object):
         for route in routes:
             self.add_route(route)
 
+    # 插件管理
     def install(self, plugin):
         """ Add a plugin to the list of plugins and prepare it for being
             applied to all routes of this application. A plugin may be a simple
@@ -884,6 +897,7 @@ class Bottle(object):
         """ Reset all routes (force plugins to be re-applied) and clear all
             caches. If an ID or route object is given, only that specific route
             is affected. """
+        # Reset 会清除 endpoint 的缓存，见 :meth:`Route.call`
         if route is None: routes = self.routes
         elif isinstance(route, Route): routes = [route]
         else: routes = [self.routes[route]]
@@ -903,6 +917,7 @@ class Bottle(object):
         """ Calls :func:`run` with the same parameters. """
         run(self, **kwargs)
 
+    # 路由管理、错误处理注册
     def match(self, environ):
         """ Search for a matching route and return a (:class:`Route` , urlargs)
             tuple. The second value is a dictionary with parameters extracted
@@ -918,6 +933,8 @@ class Bottle(object):
     def add_route(self, route):
         """ Add a route object, but do not change the :data:`Route.app`
             attribute."""
+        # 为应用添加路由规则
+        # routes 和 router 都会进行更改
         self.routes.append(route)
         self.router.add(route.rule, route.method, route, name=route.name)
         if DEBUG: route.prepare()
@@ -958,8 +975,13 @@ class Bottle(object):
         plugins = makelist(apply)
         skiplist = makelist(skip)
 
+        # 加载并注册路由
         def decorator(callback):
+            # 通过字符串动态加载函数
             if isinstance(callback, basestring): callback = load(callback)
+            # for rule in (makelist(path) or yieldroutes(callback)):
+            # 如果未指定 path，还可以根据 callback 函数的签名来生成路径（还有这种操作！）
+            # 见 :meth:`yieldroutes`
             for rule in makelist(path) or yieldroutes(callback):
                 for verb in makelist(method):
                     verb = verb.upper()
@@ -1017,6 +1039,7 @@ class Bottle(object):
     def default_error_handler(self, res):
         return tob(template(ERROR_PAGE_TEMPLATE, e=res, template_settings=dict(name='__ERROR_PAGE_TEMPLATE')))
 
+    # WSGI 请求处理
     def _handle(self, environ):
         path = environ['bottle.raw_path'] = environ['PATH_INFO']
         if py3k:
@@ -1031,13 +1054,16 @@ class Bottle(object):
                 out = None
                 try:
                     self.trigger_hook('before_request')
+                    # 路由匹配 & 环境注入
                     route, args = self.router.match(environ)
                     environ['route.handle'] = route
                     environ['bottle.route'] = route
                     environ['route.url_args'] = args
+                    # 调用请求处理函数
                     out = route.call(**args)
                     break
                 except HTTPResponse as E:
+                    # 正常返回请求
                     out = E
                     break
                 except RouteReset:
@@ -1052,6 +1078,7 @@ class Bottle(object):
                     try:
                         self.trigger_hook('after_request')
                     except HTTPResponse as E:
+                        # after_request hook 可以改变原有响应内容
                         out = E
                         out.apply(response)
         except (KeyboardInterrupt, SystemExit, MemoryError):
@@ -1072,6 +1099,12 @@ class Bottle(object):
         Support: False, str, unicode, dict, HTTPResponse, HTTPError, file-like,
         iterable of strings and iterable of unicodes
         """
+        # 将 _handle 函数返回的值进行格式转换，转换为 WSGI 兼容的响应
+        # 比如 return "hello"
+        # 可能的返回值：
+        # [out], List[bytes]
+        # WSGIFileWrapper(out)
+        # 由 bytes 组成的 iterable
 
         # Empty output is done here
         if not out:
@@ -1098,6 +1131,9 @@ class Bottle(object):
                                          self.default_error_handler)(out)
             return self._cast(out)
         if isinstance(out, HTTPResponse):
+            # return HTTPResponse("teapot!", status=418)
+            # 此时要通过 apply 把各种响应信息（如状态码）转移至 response 对象上
+            # 否则每次都要写 `response.status = 418` 过于麻烦
             out.apply(response)
             return self._cast(out.body)
 
@@ -1144,15 +1180,19 @@ class Bottle(object):
         try:
             out = self._cast(self._handle(environ))
             # rfc2616 section 4.3
+            # 不应返回任何 request.body，所以清空 out 的内容
             if response._status_code in (100, 101, 204, 304)\
             or environ['REQUEST_METHOD'] == 'HEAD':
                 if hasattr(out, 'close'): out.close()
                 out = []
+            # https://www.python.org/dev/peps/pep-0333/#the-application-framework-side
+            # 标准的 WSGI 应用响应。
             start_response(response._status_line, response.headerlist)
             return out
         except (KeyboardInterrupt, SystemExit, MemoryError):
             raise
         except Exception as E:
+            # 一般错误处理，返回 500，或者交由其它应用来处理异常
             if not self.catchall: raise
             err = '<h1>Critical error while processing request: %s</h1>' \
                   % html_escape(environ.get('PATH_INFO', '/'))
@@ -1179,6 +1219,7 @@ class Bottle(object):
         default_app.pop()
 
     def __setattr__(self, name, value):
+        # 这个函数没看懂是做什么用的…
         if name in self.__dict__:
             raise AttributeError("Attribute %s already defined. Plugin conflict?" % name)
         self.__dict__[name] = value
@@ -2369,6 +2410,8 @@ class WSGIHeaderDict(DictMixin):
 
 _UNSET = object()
 
+# ConfigDict 用于存储配置
+# 继承自 dict 而不是 UserDict，大概是历史原因
 class ConfigDict(dict):
     """ A dict-like configuration storage with additional support for
         namespaces, validators, meta-data, overlays and more.
@@ -2410,6 +2453,7 @@ class ConfigDict(dict):
                           represent namespaces (see :meth:`load_dict`).
         """
         config_obj = load(path)
+        # 只提取大写的变量
         obj = {key: getattr(config_obj, key) for key in dir(config_obj)
                if key.isupper()}
 
@@ -2470,6 +2514,7 @@ class ConfigDict(dict):
             >>> c.load_dict({'some': {'namespace': {'key': 'value'} } })
             {'some.namespace.key': 'value'}
         """
+        # 递归更新 dict，将 key 套到上一层上去
         for key, value in source.items():
             if isinstance(key, basestring):
                 nskey = (namespace + '.' + key).strip('.')
@@ -2501,6 +2546,7 @@ class ConfigDict(dict):
         return self[key]
 
     def __setitem__(self, key, value):
+        # 类型检查
         if not isinstance(key, basestring):
             raise TypeError('Key has type %r (not a string)' % type(key))
 
@@ -2510,6 +2556,7 @@ class ConfigDict(dict):
         if key in self and self[key] is value:
             return
 
+        # 响应更新
         self._on_change(key, value)
         dict.__setitem__(self, key, value)
 
@@ -2522,6 +2569,8 @@ class ConfigDict(dict):
         if key in self._virtual_keys:
             raise KeyError("Virtual keys cannot be deleted: %s" % key)
 
+        # 如果 _source 中存在该键，则从下层恢复值，此时实体键变为虚拟键
+        # 否则直接从当前 overlay 删除
         if self._source and key in self._source:
             # Not virtual, but present in source -> Restore virtual value
             dict.__delitem__(self, key)
@@ -2538,6 +2587,7 @@ class ConfigDict(dict):
         if key in self and key not in self._virtual_keys:
             return  # Do nothing for non-virtual keys.
 
+        # 对子字典的 virtual key 进行层级更新
         self._virtual_keys.add(key)
         if key in self and self[key] is not value:
             self._on_change(key, value)
@@ -2559,6 +2609,7 @@ class ConfigDict(dict):
             overlay._delete_virtual(key)
 
     def _on_change(self, key, value):
+        # 更改回调响应
         for cb in self._change_listener:
             if cb(self, key, value):
                 return True
@@ -2618,6 +2669,9 @@ class ConfigDict(dict):
 
             Used by Route.config
         """
+        # 注释讲的很清楚，这个逻辑有点像 Docker 的只读层和可写层
+        # _source 用于存储下层 dict，用于 key fallback
+        # _virtual 用于存储来自下层的 key，这些 key 可以被覆盖，但不能在这层被删除。
         # Cleanup dead references
         self._overlays[:] = [ref for ref in self._overlays if ref() is not None]
 
@@ -2625,6 +2679,7 @@ class ConfigDict(dict):
         overlay._meta = self._meta
         overlay._source = self
         self._overlays.append(weakref.ref(overlay))
+        # 将本层的所有值以虚拟键的形式拷贝至上层
         for key in self:
             overlay._set_virtual(key, self[key])
         return overlay
@@ -3147,6 +3202,7 @@ def yieldroutes(func):
         c(x, y=5)   -> '/c/<x>' and '/c/<x>/<y>'
         d(x=5, y=6) -> '/d' and '/d/<x>' and '/d/<x>/<y>'
     """
+    # 生成函数签名
     path = '/' + func.__name__.replace('__', '/').lstrip('/')
     spec = getargspec(func)
     argc = len(spec[0]) - len(spec[3] or [])
@@ -3645,6 +3701,8 @@ def load(target, **namespace):
         expression. Keyword arguments passed to this function are available as
         local variables. Example: ``import_string('re:compile(x)', x='[a-z]')``
     """
+    # 通过字符串导入对应的函数或模块
+    # 规则见 docstring
     module, target = target.split(":", 1) if ':' in target else (target, None)
     if module not in sys.modules: __import__(module)
     if not target: return sys.modules[module]
@@ -4419,11 +4477,13 @@ def _main(argv):  # pragma: no coverage
     sys.path.insert(0, '.')
     sys.modules.setdefault('bottle', sys.modules['__main__'])
 
+    # 处理端口
     host, port = (args.bind or 'localhost'), 8080
     if ':' in host and host.rfind(']') < host.rfind(':'):
         host, port = host.rsplit(':', 1)
     host = host.strip('[]')
 
+    # 处理配置
     config = ConfigDict()
 
     for cfile in args.conf or []:
@@ -4446,6 +4506,7 @@ def _main(argv):  # pragma: no coverage
         else:
             config[cval] = True
 
+    # 运行
     run(args.app,
         host=host,
         port=int(port),
