@@ -206,6 +206,8 @@ def makelist(data):  # This is just too handy
 
 class DictProperty(object):
     """ Property that maps to a key in a local dict-like attribute. """
+    # 感觉跟 cached_property 的功能很像，只是会把缓存的值统一存在 obj 上的一个 dict 里，
+    # 比如 BaseRequest.__init__ > environ > ~1172
 
     def __init__(self, attr, key=None, read_only=False):
         self.attr, self.key, self.read_only = attr, key, read_only
@@ -241,6 +243,10 @@ class cached_property(object):
 
     def __get__(self, obj, cls):
         if obj is None: return self
+        # 将结果直接放入 __dict__ 中
+        # 再调用时，解释器会优先检查 obj.__dict__
+        # 如果找到了就直接返回
+        # 如果找不到会去类的绑定描述符上执行 __get__，也就是这个函数
         value = obj.__dict__[self.func.__name__] = self.func(obj)
         return value
 
@@ -253,6 +259,10 @@ class lazy_attribute(object):
         self.getter = func
 
     def __get__(self, obj, cls):
+        # 执行 __get__ 时，它会直接把结果覆盖在类上。
+        # 如 :meth:`Bottle._global_config`
+        # 调用前它是一个 lazy_attr 对象，通过 __get__ 获取一次后，该属性就会被覆盖掉
+        # 之后 Bottle._global_config 就是 ConfigDict() 了。
         value = self.getter(cls)
         setattr(cls, self.__name__, value)
         return value
@@ -342,12 +352,13 @@ class Router(object):
         """ Add a filter. The provided function is called with the configuration
         string as parameter and must return a (regexp, to_python, to_url) tuple.
         The first element is a string, the last two are callables or None. """
+        # 划重点：(regexp, to_python, to_url)
         self.filters[name] = func
 
-    rule_syntax = re.compile('(\\\\*)'
-        '(?:(?::([a-zA-Z_][a-zA-Z_0-9]*)?()(?:#(.*?)#)?)'
-          '|(?:<([a-zA-Z_][a-zA-Z_0-9]*)?(?::([a-zA-Z_]*)'
-            '(?::((?:\\\\.|[^\\\\>]+)+)?)?)?>))')
+    rule_syntax = re.compile('(\\\\*)'                      # 组 1
+        '(?:(?::([a-zA-Z_][a-zA-Z_0-9]*)?()(?:#(.*?)#)?)'   # 组 2-4，匹配老规则，会有 depr
+          '|(?:<([a-zA-Z_][a-zA-Z_0-9]*)?(?::([a-zA-Z_]*)'  # 组 5-7，匹配新的动态规则
+            '(?::((?:\\\\.|[^\\\\>]+)+)?)?)?>))')           # ↑↑↑
 
     def _itertokens(self, rule):
         offset, prefix = 0, ''
@@ -361,16 +372,25 @@ class Router(object):
                 prefix += match.group(0)[len(g[0]):]
                 offset = match.end()
                 continue
+            # 返回静态前缀，如 /show/test/，可能有多段（一直叠加至找到第一个动态匹配为止）
             if prefix:
                 yield prefix, None, None
             name, filtr, conf = g[4:7] if g[2] is None else g[1:4]
+            # <name:re:[a-z]+>
+            # name: name; filtr: re, conf: [a-z]+
+            # 返回动态规则
             yield name, filtr or 'default', conf or None
             offset, prefix = match.end(), ''
+        # 返回静态前缀
         if offset <= len(rule) or prefix:
             yield prefix + rule[offset:], None, None
 
     def add(self, rule, method, target, name=None):
         """ Add a new rule or replace the target for an existing rule. """
+        # 解析 URL 规则
+        # 将其编译成不带命名规则的正则表达式（flatpat），方便匹配
+        # 通过 (flatpat, method) 来判断该规则是否会覆盖现有规则。
+
         anons = 0  # Number of anonymous wildcards found
         keys = []  # Names of keys
         pattern = ''  # Regular expression pattern with named groups
@@ -399,11 +419,13 @@ class Router(object):
         self.builder[rule] = builder
         if name: self.builder[name] = builder
 
+        # 如果不存在动态规则，则单独将其放入静态路由表中
         if is_static and not self.strict_order:
             self.static.setdefault(method, {})
             self.static[method][self.build(rule)] = (target, None)
             return
 
+        # 处理动态路由
         try:
             re_pattern = re.compile('^(%s)$' % pattern)
             re_match = re_pattern.match
@@ -428,6 +450,10 @@ class Router(object):
             getargs = None
 
         flatpat = _re_flatten(pattern)
+        # rule: 原始路由规则（'/some/<num:int>/'）
+        # flatpat: 编译后的正则路由规则（'/some/(?:-?\\d+)/'）
+        # target: 该路由规则对应的目标函数（<GET '/some/<num:int>/' <function num at 0x05A85978>>）
+        # getargs: 解析方法（<function bottle.Router.add.<locals>.getargs(path)>）
         whole_rule = (rule, flatpat, target, getargs)
 
         if (flatpat, method) in self._groups:
@@ -446,6 +472,7 @@ class Router(object):
         all_rules = self.dyna_routes[method]
         comborules = self.dyna_regexes[method] = []
         maxgroups = self._MAX_GROUPS_PER_PATTERN
+        # 每 99 个动态规则会使用 "|" 压缩进一个正则表达式
         for x in range(0, len(all_rules), maxgroups):
             some = all_rules[x:x + maxgroups]
             combined = (flatpat for (_, flatpat, _, _) in some)
@@ -469,6 +496,8 @@ class Router(object):
 
     def match(self, environ):
         """ Return a (target, url_args) tuple or raise HTTPError(400/404/405). """
+        # Python WSGI 规范
+        # https://www.python.org/dev/peps/pep-0333/#environ-variables
         verb = environ['REQUEST_METHOD'].upper()
         path = environ['PATH_INFO'] or '/'
 
@@ -479,11 +508,21 @@ class Router(object):
 
         for method in methods:
             if method in self.static and path in self.static[method]:
+                # 静态匹配
                 target, getargs = self.static[method][path]
                 return target, getargs(path) if getargs else {}
             elif method in self.dyna_regexes:
+                # 动态匹配
                 for combined, rules in self.dyna_regexes[method]:
                     match = combined(path)
+                    # 举例：
+                    # (^/a/(?:-?\d+)/$)|(^/b/(?:-?\d+)/$)
+                    # rules 里第一条是 /a/<num:int>/ 第二条是 /b/<nnnum:int>/
+                    # 匹配 /b/123/ 时，lastindex 是 2（最后一个匹配组的 index）
+                    # 那么就会返回 b 的 target 以及参数。
+
+                    # 注意，虽然 target 中每条 URL 规则的组名均被去除（使用 (?:) 避免捕获）
+                    # 但 getargs 的自由变量中具有包含组名的正则，所以会返回 groupdict
                     if match:
                         target, getargs = rules[match.lastindex - 1]
                         return target, getargs(path) if getargs else {}
@@ -512,6 +551,9 @@ class Route(object):
         configuration and applies Plugins on demand. It is also responsible for
         turing an URL path rule into a regular expression usable by the Router.
     """
+    # 对路由规则进行封装。方便使用插件（:meth:`Route.call`）
+    # 实际上在传给 Router 之前，它会将自身的部分属性单独提取出来。
+    # 见 :meth:`Bottle.add_route`
 
     def __init__(self, app, rule, method, callback,
                  name=None,
