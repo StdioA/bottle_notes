@@ -2134,6 +2134,7 @@ class JSONPlugin(object):
         dumps = self.json_dumps
         if not self.json_dumps: return callback
 
+        # 定义装饰器，将 dict 的返回值渲染为 JSON 字符串，同时设定 Content-Type
         def wrapper(*a, **ka):
             try:
                 rv = callback(*a, **ka)
@@ -2241,6 +2242,7 @@ class MultiDict(DictMixin):
     def keys(self):
         return self.dict.keys()
 
+    # Python 2 和 3 的兼容接口实现
     if py3k:
 
         def values(self):
@@ -2457,6 +2459,8 @@ class WSGIHeaderDict(DictMixin):
     def __contains__(self, key):
         return self._ekey(key) in self.environ
 
+# 类似于 JS 里的 Symbol，提供一个独一无二的值
+# 现在 Python3 也许可以用 Ellipsis（`...`）
 _UNSET = object()
 
 # ConfigDict 用于存储配置
@@ -2753,6 +2757,7 @@ class AppStack(list):
 
     @property
     def default(self):
+        # 保证里面至少有一个 App
         try:
             return self[-1]
         except IndexError:
@@ -2789,6 +2794,7 @@ class _closeiter(object):
             func()
 
 
+# 实现多路径下的文件查找
 class ResourceManager(object):
     """ This class manages a list of search paths and helps to find and open
         application-bound resources (files).
@@ -2875,6 +2881,7 @@ class ResourceManager(object):
         return self.opener(fname, mode=mode, *args, **kwargs)
 
 
+# 用于保存上传的文件，但会对文件名做改动
 class FileUpload(object):
     def __init__(self, fileobj, name, filename, headers=None):
         """ Wrapper for file uploads. """
@@ -3017,6 +3024,7 @@ def static_file(filename, root,
     filename = os.path.abspath(os.path.join(root, filename.strip('/\\')))
     headers = dict()
 
+    # Fail-fast 安全检查
     if not filename.startswith(root):
         return HTTPError(403, "Access denied.")
     if not os.path.exists(filename) or not os.path.isfile(filename):
@@ -3024,6 +3032,7 @@ def static_file(filename, root,
     if not os.access(filename, os.R_OK):
         return HTTPError(403, "You do not have permission to access this file.")
 
+    # Minetype 处理
     if mimetype is True:
         if download and download is not True:
             mimetype, encoding = mimetypes.guess_type(download)
@@ -3037,6 +3046,7 @@ def static_file(filename, root,
             mimetype += '; charset=%s' % charset
         headers['Content-Type'] = mimetype
 
+    # 下载时添加 Content-Disposition 头部
     if download:
         download = os.path.basename(filename if download is True else download)
         headers['Content-Disposition'] = 'attachment; filename="%s"' % download
@@ -3049,6 +3059,7 @@ def static_file(filename, root,
 
     getenv = request.environ.get
 
+    # Etag 缓存
     if etag is None:
         etag = '%d:%d:%d:%d:%s' % (stats.st_dev, stats.st_ino, stats.st_mtime,
                                    clen, filename)
@@ -3060,6 +3071,7 @@ def static_file(filename, root,
         if check and check == etag:
             return HTTPResponse(status=304, **headers)
 
+    # If-Modified-Since 缓存
     ims = getenv('HTTP_IF_MODIFIED_SINCE')
     if ims:
         ims = parse_date(ims.split(";")[0].strip())
@@ -3068,6 +3080,7 @@ def static_file(filename, root,
 
     body = '' if request.method == 'HEAD' else open(filename, 'rb')
 
+    # Range 处理（从某个位置开始传输）
     headers["Accept-Ranges"] = "bytes"
     range_header = getenv('HTTP_RANGE')
     if range_header:
@@ -3078,7 +3091,10 @@ def static_file(filename, root,
         headers["Content-Range"] = "bytes %d-%d/%d" % (offset, end - 1, clen)
         headers["Content-Length"] = str(end - offset)
         if body: body = _file_iter_range(body, offset, end - offset, close=True)
+        # HTTP 206 Partial Content
         return HTTPResponse(body, status=206, **headers)
+
+    # 返回文件全部内容
     return HTTPResponse(body, **headers)
 
 ###############################################################################
@@ -3094,6 +3110,7 @@ def debug(mode=True):
     DEBUG = bool(mode)
 
 
+# 各种解析函数
 def http_date(value):
     if isinstance(value, (datedate, datetime)):
         value = value.utctimetuple()
@@ -3146,12 +3163,14 @@ def parse_range_header(header, maxlen=0):
 #: Header tokenizer used by _parse_http_header()
 _hsplit = re.compile('(?:(?:"((?:[^"\\\\]+|\\\\.)*)")|([^;,=]+))([;,=]?)').findall
 
+# 这个函数还没有被用到
 def _parse_http_header(h):
     """ Parses a typical multi-valued and parametrised HTTP header (e.g. Accept headers) and returns a list of values
         and parameters. For non-standard or broken input, this implementation may return partial results.
     :param h: A header string (e.g. ``text/html,text/plain;q=0.9,*/*;q=0.8``)
     :return: List of (value, params) tuples. The second element is a (possibly empty) dict.
     """
+    # [('text/html', {}), ('text/plain', {'q': '0.9'}), ('*/*', {'q': '0.8'})]
     values = []
     if '"' not in h:  # INFO: Fast path without regexp (~2x faster)
         for value in h.split(','):
@@ -3192,6 +3211,7 @@ def _parse_qsl(qs):
     return r
 
 
+# 比较字符串，划重点：不受时间维度攻击
 def _lscmp(a, b):
     """ Compares two strings in a cryptographically safe way:
         Runtime is not affected by length of common prefix. """
@@ -3199,6 +3219,7 @@ def _lscmp(a, b):
                    for x, y in zip(a, b)) and len(a) == len(b)
 
 
+# 这几个 API 现在在 Request 和 Response 的 cookie 部分通过可选参数（secret）实现。
 def cookie_encode(data, key, digestmod=None):
     """ Encode and sign a pickle-able object. Return a (byte) string """
     depr(0, 13, "cookie_encode() will be removed soon.",
@@ -3242,6 +3263,7 @@ def html_quote(string):
                     .replace('\r', '&#13;').replace('\t', '&#9;')
 
 
+# 生成函数签名，用于不指定 route 路径时的路径生成
 def yieldroutes(func):
     """ Return a generator for routes that match the signature (name, args)
     of the func parameter. This may yield more than one route if the function
@@ -3252,7 +3274,6 @@ def yieldroutes(func):
         c(x, y=5)   -> '/c/<x>' and '/c/<x>/<y>'
         d(x=5, y=6) -> '/d' and '/d/<x>' and '/d/<x>/<y>'
     """
-    # 生成函数签名
     path = '/' + func.__name__.replace('__', '/').lstrip('/')
     spec = getargspec(func)
     argc = len(spec[0]) - len(spec[3] or [])
@@ -3319,6 +3340,8 @@ def auth_basic(check, realm="private", text="Access denied"):
 
 def make_default_app_wrapper(name):
     """ Return a callable that relays calls to the current default app. """
+    # 惰性创建 App
+    # app() -> AppStack.__call__ -> AppStack.default
 
     @functools.wraps(getattr(Bottle, name))
     def wrapper(*a, **ka):
@@ -3780,6 +3803,7 @@ def load_app(target):
 _debug = debug
 
 
+# app.run() 会调用 run(app)
 def run(app=None,
         server='wsgiref',
         host='127.0.0.1',
@@ -3807,7 +3831,9 @@ def run(app=None,
         :param options: Options passed to the server adapter.
      """
     if NORUN: return
+    # 监听文件状态 auto reload
     if reloader and not os.environ.get('BOTTLE_CHILD'):
+        # reload 模型中的主进程，监听 lockfile 并重启子进程
         import subprocess
         lockfile = None
         try:
@@ -3819,20 +3845,26 @@ def run(app=None,
                 environ['BOTTLE_CHILD'] = 'true'
                 environ['BOTTLE_LOCKFILE'] = lockfile
                 p = subprocess.Popen(args, env=environ)
+                # 等待进程退出
                 while p.poll() is None:  # Busy wait...
                     os.utime(lockfile, None)  # I am alive!
                     time.sleep(interval)
+                # 子进程因 reload 退出时，会重启子进程
+                # 其它原因退出时，则删除 lockfile，并以相同状态码退出
                 if p.poll() != 3:
                     if os.path.exists(lockfile): os.unlink(lockfile)
                     sys.exit(p.poll())
         except KeyboardInterrupt:
+            # Ctrl-C 退出直接走后面的 return，正常关闭
             pass
         finally:
             if os.path.exists(lockfile):
                 os.unlink(lockfile)
         return
 
+    # reload 模型中的子进程，非 reload 时就是主进程
     try:
+        # 加载 app
         if debug is not None: _debug(debug)
         app = app or default_app()
         if isinstance(app, basestring):
@@ -3840,11 +3872,13 @@ def run(app=None,
         if not callable(app):
             raise ValueError("Application is not callable: %r" % app)
 
+        # 安装插件
         for plugin in plugins or []:
             if isinstance(plugin, basestring):
                 plugin = load(plugin)
             app.install(plugin)
 
+        # 配置设置
         if config:
             app.config.update(config)
 
@@ -3866,19 +3900,27 @@ def run(app=None,
             _stderr("Hit Ctrl-C to quit.\n\n")
 
         if reloader:
+            # 通过环境变量传递 lockfile
             lockfile = os.environ.get('BOTTLE_LOCKFILE')
             bgcheck = FileCheckerThread(lockfile, interval)
             with bgcheck:
                 server.run(app)
+                # 接收到 `interrupt_main` 发送的 SIGINT 信号后，有些 server adapter 可以直接退出
+                # 有些 server 还要单独做一些工作，所以会监听 SIGINT
+                # 不过收到信号后终究还是会退出，于是进入下一行 ↓↓↓
+            # interrupt_main() 跳出后，会检查 bgcheck
+            # 如果要 reload，则使用 3 状态码退出后重启。
             if bgcheck.status == 'reload':
                 sys.exit(3)
         else:
+            # 直接运行
             server.run(app)
     except KeyboardInterrupt:
         pass
     except (SystemExit, MemoryError):
         raise
     except:
+        # 检测到有异常抛出，如果是有 reload，则稍后以 3 返回值退出（也就是重启）
         if not reloader: raise
         if not getattr(server, 'quiet', quiet):
             print_exc()
@@ -3902,11 +3944,13 @@ class FileCheckerThread(threading.Thread):
         mtime = lambda p: os.stat(p).st_mtime
         files = dict()
 
+        # 收集所有文件的更新时间
         for module in list(sys.modules.values()):
             path = getattr(module, '__file__', '') or ''
             if path[-4:] in ('.pyo', '.pyc'): path = path[:-1]
             if path and exists(path): files[path] = mtime(path)
 
+        # 不断检查文件是否更改
         while not self.status:
             if not exists(self.lockfile)\
             or mtime(self.lockfile) < time.time() - self.interval - 5:
@@ -3914,7 +3958,10 @@ class FileCheckerThread(threading.Thread):
                 thread.interrupt_main()
             for path, lmtime in list(files.items()):
                 if not exists(path) or mtime(path) > lmtime:
+                    # 文件有更改，终止该线程
                     self.status = 'reload'
+                    # 这里阻断的是主线程，也就是 `server.run(app)` 语句
+                    # 主线程跳出（3908 行）前，该线程进入 __exit__，也停止运行
                     thread.interrupt_main()
                     break
             time.sleep(self.interval)
@@ -3925,6 +3972,7 @@ class FileCheckerThread(threading.Thread):
     def __exit__(self, exc_type, *_):
         if not self.status: self.status = 'exit'  # silent exit
         self.join()
+        # 如果 Ctrl-C，则不需要 Reload，这里返回 True，with 块也就不会抛出异常
         return exc_type is not None and issubclass(exc_type, KeyboardInterrupt)
 
 ###############################################################################
@@ -4488,6 +4536,11 @@ ERROR_PAGE_TEMPLATE = """
 %%end
 """ % __name__
 
+# request 和 response 都是线程独立的
+# 无论是多进程还是多线程 server 模型，每次函数拿到的 request 和 response 都是全新的
+# 多个线程中的 request 和 response 相互独立，互不干扰
+# 这样就造出了 request 和 response 上下文
+# Flask 也是这么玩的
 #: A thread-safe instance of :class:`LocalRequest`. If accessed from within a
 #: request callback, this instance always refers to the *current* request
 #: (even on a multi-threaded server).
@@ -4497,6 +4550,7 @@ request = LocalRequest()
 #: HTTP response for the *current* request.
 response = LocalResponse()
 
+# 用途类似 werkzeug.local.Local 和 django-globals
 #: A thread-safe namespace. Not used by Bottle.
 local = threading.local()
 
@@ -4504,6 +4558,8 @@ local = threading.local()
 # BC: 0.6.4 and needed for run()
 apps = app = default_app = AppStack()
 
+# 扩展导入，会改变包的名称
+# Flask 也是这么玩的
 #: A virtual package that redirects import statements.
 #: Example: ``import bottle.ext.sqlite`` actually imports `bottle_sqlite`.
 ext = _ImportRedirect('bottle.ext' if __name__ == '__main__' else
@@ -4569,3 +4625,6 @@ def _main(argv):  # pragma: no coverage
 
 if __name__ == '__main__':  # pragma: no coverage
     _main(sys.argv)
+
+# 不知道为什么这句注释在新版本里被删掉了，我想把它加回去。
+# THE END
