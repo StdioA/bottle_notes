@@ -1229,7 +1229,7 @@ class Bottle(object):
 # HTTP and WSGI Tools ##########################################################
 ###############################################################################
 
-
+# BaseRequest 部分
 class BaseRequest(object):
     """ A wrapper for WSGI environment dictionaries that adds a lot of
         convenient access methods and properties. Most of them are read-only.
@@ -1251,11 +1251,17 @@ class BaseRequest(object):
         self.environ = {} if environ is None else environ
         self.environ['bottle.request'] = self
 
+    # 这种 property 通常都通过直接设置 `self.environ["bottle.app"]` 来实现，不会真的去调用这个 property 背后的函数。
+    # 这个 environ 实际上就是 WSGI environ，它和 bottle 的 WSGI 接口（:meth:`Bottle.uwsgi`）中的 environ 是同一个对象。
+    # 设置的代码在 :meth:`Bottle.handle` 中（1048 至 1061 行）
+    # 在执行到请求处理函数时，这个值就已经设置好了，所以可以直接通过 `request.app` 来访问。
+    # 所以这个 app 更像是一个 proxy，方便用户通过 request 来快速访问 app 对象。
     @DictProperty('environ', 'bottle.app', read_only=True)
     def app(self):
         """ Bottle application handling this request. """
         raise RuntimeError('This request is not connected to an application.')
 
+    # 同上，下同
     @DictProperty('environ', 'bottle.route', read_only=True)
     def route(self):
         """ The bottle :class:`Route` object that matches this request. """
@@ -1277,6 +1283,7 @@ class BaseRequest(object):
         """ The ``REQUEST_METHOD`` value as an uppercase string. """
         return self.environ.get('REQUEST_METHOD', 'GET').upper()
 
+    # 各种参数处理
     @DictProperty('environ', 'bottle.request.headers', read_only=True)
     def headers(self):
         """ A :class:`WSGIHeaderDict` that provides case-insensitive access to
@@ -1312,6 +1319,7 @@ class BaseRequest(object):
             return default
         return value or default
 
+    # 请求体处理
     @DictProperty('environ', 'bottle.request.query', read_only=True)
     def query(self):
         """ The :attr:`query_string` parsed into a :class:`FormsDict`. These
@@ -1330,6 +1338,7 @@ class BaseRequest(object):
             encoded POST or PUT request body. The result is returned as a
             :class:`FormsDict`. All keys and values are strings. File uploads
             are stored separately in :attr:`files`. """
+        # 重点：文件上传对象单独在 files 中存储。
         forms = FormsDict()
         forms.recode_unicode = self.POST.recode_unicode
         for name, item in self.POST.allitems():
@@ -1381,6 +1390,7 @@ class BaseRequest(object):
         return None
 
     def _iter_body(self, read, bufsize):
+        # 分段返回内容
         maxread = max(0, self.content_length)
         while maxread:
             part = read(min(maxread, bufsize))
@@ -1390,10 +1400,14 @@ class BaseRequest(object):
 
     @staticmethod
     def _iter_chunked(read, bufsize):
+        # 读取分块编码的请求体
+        # Chunked Transfer Encoding
+        # http://www.rfcreader.com/#rfc2616_line1135
         err = HTTPError(400, 'Error while parsing chunked transfer body.')
         rn, sem, bs = tob('\r\n'), tob(';'), tob('')
         while True:
             header = read(1)
+            # 从第一行中读取块大小
             while header[-2:] != rn:
                 c = read(1)
                 header += c
@@ -1404,8 +1418,10 @@ class BaseRequest(object):
                 maxread = int(tonat(size.strip()), 16)
             except ValueError:
                 raise err
+            # 遇到长度为 0 的块则结束
             if maxread == 0: break
             buff = bs
+            # 将该段分割为 bufsize 大小的小段并返回
             while maxread > 0:
                 if not buff:
                     buff = read(min(maxread, bufsize))
@@ -1418,21 +1434,26 @@ class BaseRequest(object):
 
     @DictProperty('environ', 'bottle.request.body', read_only=True)
     def _body(self):
+        # 把 Body 的 stream 读取出来，
         try:
             read_func = self.environ['wsgi.input'].read
         except KeyError:
+            # 没有 body 输入
             self.environ['wsgi.input'] = BytesIO()
             return self.environ['wsgi.input']
+        # 选择读取函数（是否分块）
         body_iter = self._iter_chunked if self.chunked else self._iter_body
         body, body_size, is_temp_file = BytesIO(), 0, False
         for part in body_iter(read_func, self.MEMFILE_MAX):
             body.write(part)
             body_size += len(part)
+            # 当 body 过大时，使用临时文件存储
             if not is_temp_file and body_size > self.MEMFILE_MAX:
                 body, tmp = TemporaryFile(mode='w+b'), body
                 body.write(tmp.getvalue())
                 del tmp
                 is_temp_file = True
+        # 读取后，覆盖掉 wsgi.input，body 的 docstring 也有提到。
         self.environ['wsgi.input'] = body
         body.seek(0)
         return body
@@ -1456,6 +1477,7 @@ class BaseRequest(object):
             :class:`io.BytesIO` instance. Accessing this property for the first
             time reads and replaces the ``wsgi.input`` environ variable.
             Subsequent accesses just do a `seek(0)` on the file object. """
+        # 实现见 :attr:`body`
         self._body.seek(0)
         return self._body
 
@@ -1478,11 +1500,13 @@ class BaseRequest(object):
         # We default to application/x-www-form-urlencoded for everything that
         # is not multipart and take the fast path (also: 3.1 workaround)
         if not self.content_type.startswith('multipart/'):
+            # 解析 x-www-form-urlencoded 格式的请求体
             pairs = _parse_qsl(tonat(self._get_body_string(), 'latin1'))
             for key, value in pairs:
                 post[key] = value
             return post
 
+        # 解析 mutipart 请求体
         safe_env = {'QUERY_STRING': ''}  # Build a safe environment for cgi
         for key in ('REQUEST_METHOD', 'CONTENT_TYPE', 'CONTENT_LENGTH'):
             if key in self.environ: safe_env[key] = self.environ[key]
@@ -1502,6 +1526,7 @@ class BaseRequest(object):
                 post[item.name] = item.value
         return post
 
+    # URL 处理
     @property
     def url(self):
         """ The full request URI including hostname and scheme. If your app
@@ -1534,6 +1559,7 @@ class BaseRequest(object):
         """ Request path including :attr:`script_name` (if present). """
         return urljoin(self.script_name, self.path.lstrip('/'))
 
+    # 请求头相关处理
     @property
     def query_string(self):
         """ The raw :attr:`query` part of the URL (everything in between ``?``
@@ -1604,6 +1630,8 @@ class BaseRequest(object):
             the client IP and followed by zero or more proxies. This does only
             work if all proxies support the ```X-Forwarded-For`` header. Note
             that this information can be forged by malicious clients. """
+        # https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Headers/X-Forwarded-For
+        # 如果有多层代理，可以用逗号分隔每层的 IP
         proxy = self.environ.get('HTTP_X_FORWARDED_FOR')
         if proxy: return [ip.strip() for ip in proxy.split(',')]
         remote = self.environ.get('REMOTE_ADDR')
@@ -1623,6 +1651,7 @@ class BaseRequest(object):
     def get(self, value, default=None):
         return self.environ.get(value, default)
 
+    # 通过 MutableMapping abc 操纵 environ
     def __getitem__(self, key):
         return self.environ[key]
 
@@ -1661,6 +1690,7 @@ class BaseRequest(object):
     def __repr__(self):
         return '<%s: %s %s>' % (self.__class__.__name__, self.method, self.url)
 
+    # 通过设置属性来添加扩展内容
     def __getattr__(self, name):
         """ Search in self.environ for additional user defined attributes. """
         try:
@@ -1683,6 +1713,7 @@ class BaseRequest(object):
             raise AttributeError("Attribute not defined: %s" % name)
 
 
+# BaseResponse 部分
 def _hkey(key):
     if '\n' in key or '\r' in key or '\0' in key:
         raise ValueError("Header names must not contain control characters: %r" % key)
@@ -1696,6 +1727,7 @@ def _hval(value):
     return value
 
 
+# Header 描述符，实现特定头部的托管
 class HeaderProperty(object):
     def __init__(self, name, reader=None, writer=None, default=''):
         self.name, self.default = name, default
@@ -1714,6 +1746,7 @@ class HeaderProperty(object):
         del obj[self.name]
 
 
+# Response 基类
 class BaseResponse(object):
     """ Storage class for a response body as well as headers and cookies.
 
@@ -1748,6 +1781,7 @@ class BaseResponse(object):
         self.body = body
         self.status = status or self.default_status
         if headers:
+            # 支持 dict 和键值对
             if isinstance(headers, dict):
                 headers = headers.items()
             for name, value in headers:
@@ -1803,6 +1837,7 @@ class BaseResponse(object):
     def _get_status(self):
         return self._status_line
 
+    # status 不能 delete
     status = property(
         _get_status, _set_status, None,
         ''' A writeable property to change the HTTP response status. It accepts
@@ -1812,6 +1847,7 @@ class BaseResponse(object):
             always a status string. ''')
     del _get_status, _set_status
 
+    # MutableMapping abc 操作 headers
     @property
     def headers(self):
         """ An instance of :class:`HeaderDict`, a case-insensitive dict-like
@@ -1925,6 +1961,7 @@ class BaseResponse(object):
             cookie). The main intention is to make pickling and unpickling
             save, not to store secret information at client side.
         """
+        # 目前允许通过 pickle + 签名的方式设置非字符串的值
         if not self._cookies:
             self._cookies = SimpleCookie()
 
@@ -1951,6 +1988,7 @@ class BaseResponse(object):
         self._cookies[name] = value
 
         for key, value in options.items():
+            # 特定 cookie 格式处理
             if key in ('max_age', 'maxage'): # 'maxage' variant added in 0.13
                 key = 'max-age'
                 if isinstance(value, timedelta):
@@ -1967,6 +2005,7 @@ class BaseResponse(object):
                     raise CookieError("Invalid value samesite=%r (expected 'lax' or 'strict')" % (key,))
             if key in ('secure', 'httponly') and not value:
                 continue
+            # 设置 cookie
             self._cookies[name][key] = value
 
     def delete_cookie(self, key, **kwargs):
@@ -1984,6 +2023,7 @@ class BaseResponse(object):
 
 
 def _local_property():
+    # :meth:`BaseRequest.__init__` 中，`self.environ = ...` 实际上操作的是这个 thread_local 的 property.
     ls = threading.local()
 
     def fget(_):
@@ -2028,8 +2068,16 @@ class LocalResponse(BaseResponse):
 Request = BaseRequest
 Response = BaseResponse
 
+# 这两行放到这里备用
+# request = LocalRequest()
+# response = LocalResponse()
 
 class HTTPResponse(Response, BottleException):
+    # 实现 apply，可以在 App 中将对象信息转移至 LocalResponse
+    # :meth:`Bottle._handle`
+    # if isinstance(out, HTTPResponse):
+    #     out.apply(response)
+    # 同时继承 BottleException，支持 raise
     def __init__(self, body='', status=None, headers=None, **more_headers):
         super(HTTPResponse, self).__init__(body, status, headers, **more_headers)
 
@@ -2042,6 +2090,7 @@ class HTTPResponse(Response, BottleException):
 
 
 class HTTPError(HTTPResponse):
+    # 给 Error 使用，行为是类似的
     default_status = 500
 
     def __init__(self,
@@ -3130,6 +3179,7 @@ def _parse_http_header(h):
     return values
 
 
+# 解析 query string，url-encoded form body 也用它
 def _parse_qsl(qs):
     r = []
     for pair in qs.replace(';', '&').split('&'):
